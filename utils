@@ -1,0 +1,49 @@
+import torch
+import torch.nn as nn
+
+
+class DiceBCELoss(nn.Module):
+    def __init__(self, weight_dice=0.5, weight_bce=0.5):
+        super(DiceBCELoss, self).__init__()
+        self.weight_dice = weight_dice
+        self.weight_bce = weight_bce
+
+    def forward(self, inputs, targets, smooth=1e-5):
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        bce = nn.functional.binary_cross_entropy(inputs, targets)
+        intersection = (inputs * targets).sum()
+        dice_loss = 1 - (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
+
+        return self.weight_dice * dice_loss + self.weight_bce * bce
+
+def calculate_dice(pred, target, smooth=1e-5):
+    pred = pred.contiguous().view(-1)
+    target = target.contiguous().view(-1)
+    intersection = (pred * target).sum()
+    return (2. * intersection + smooth) / (pred.sum() + target.sum() + smooth)
+
+def calculate_iou(pred, target, smooth=1e-5):
+    pred = pred.contiguous().view(-1)
+    target = target.contiguous().view(-1)
+    intersection = (pred * target).sum()
+    total = (pred + target).sum()
+    union = total - intersection
+    return (intersection + smooth) / (union + smooth)
+
+class MetricMonitor:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.dice = 0
+        self.iou = 0
+        self.count = 0
+
+    def update(self, dice, iou):
+        self.dice += dice
+        self.iou += iou
+        self.count += 1
+
+    def get_avg(self):
+        return self.dice / self.count, self.iou / self.count
