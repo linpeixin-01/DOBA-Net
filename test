@@ -1,0 +1,55 @@
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import os
+from DOBA_Net import DOBA_Net
+from config import Config
+from dataset import Dataset
+from utils import calculate_dice, calculate_iou, MetricMonitor
+
+
+def test():
+    test_dataset = Dataset(Config.test_img_dir, Config.test_mask_dir, is_train=False)
+    test_loader = DataLoader(test_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=4)
+    model = DOBA_Net(in_channels=3, n_classes=1, base_channels=8).to(Config.device)
+    model_path = os.path.join(Config.save_dir, "best_model.pth")
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path))
+        print(f"Loaded model from {model_path}")
+    else:
+        print("No trained model found!")
+        return
+
+    model.eval()
+    metric_monitor = MetricMonitor()
+
+    print("Start Testing...")
+    with torch.no_grad():
+        progress_bar = tqdm(test_loader, desc="Testing")
+        for images, masks in progress_bar:
+            images = images.to(Config.device, dtype=torch.float)
+            masks = masks.to(Config.device, dtype=torch.float)
+
+            outputs = model(images)
+            preds = (outputs > 0.5).float()
+
+            dice = calculate_dice(preds, masks)
+            iou = calculate_iou(preds, masks)
+            #hd95 = calculate_hd95(preds, masks)
+
+            metric_monitor.update(dice.item(), iou.item())
+
+            avg_dice, avg_iou = metric_monitor.get_avg()
+            progress_bar.set_postfix({
+                'Avg Dice': f"{avg_dice:.4f}",
+                'Avg IoU': f"{avg_iou:.4f}"
+            })
+    final_dice, final_iou = metric_monitor.get_avg()
+    print("-" * 30)
+    print(f"Final Test Results:")
+    print(f"Dice: {final_dice:.4f}")
+    print(f"IoU: {final_iou:.4f}")
+
+
+if __name__ == '__main__':
+    test()
