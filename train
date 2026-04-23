@@ -1,0 +1,109 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import os
+from DOBA_Net import DOBA_Net
+from config import Config
+from dataset import Dataset
+from utils import calculate_dice, calculate_iou, MetricMonitor
+from utils import DiceBCELoss
+
+def train():
+
+    train_dataset = Dataset(Config.train_img_dir, Config.train_mask_dir, is_train=True)
+    train_loader = DataLoader(train_dataset, batch_size=Config.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_dataset = Dataset(Config.val_img_dir, Config.val_mask_dir, is_train=False)
+    val_loader = DataLoader(val_dataset, batch_size=Config.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    model = DOBA_Net(in_channels=3, n_classes=1, base_channels=8).to(Config.device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=Config.learning_rate, weight_decay=Config.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, eta_min=1e-4)
+    criterion = DiceBCELoss()
+    best_val_dice = 0.0
+    patience_counter = 0
+
+    print(f"Start Training on {Config.device}...")
+    print(f"Early Stopping Patience: {Config.patience}")
+    print("-" * 60)
+
+    for epoch in range(Config.epochs):
+        model.train()
+        train_metric_monitor = MetricMonitor()
+        running_loss = 0.0
+
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{Config.epochs} [Train]")
+
+        for images, masks in progress_bar:
+            images = images.to(Config.device, dtype=torch.float)
+            masks = masks.to(Config.device, dtype=torch.float)
+
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            preds = (outputs > 0.5).float()
+            dice = calculate_dice(preds, masks)
+            iou = calculate_iou(preds, masks)
+
+            train_metric_monitor.update(dice.item(), iou.item())
+            running_loss += loss.item()
+
+            avg_dice, avg_iou = train_metric_monitor.get_avg()
+            progress_bar.set_postfix({'Loss': f"{running_loss / len(progress_bar):.4f}", 'Dice': f"{avg_dice:.4f}"})
+
+        scheduler.step()
+        avg_train_loss = running_loss / len(train_loader)
+        avg_train_dice, _ = train_metric_monitor.get_avg()
+        model.eval()
+        val_metric_monitor = MetricMonitor()
+        val_running_loss = 0.0
+
+        with torch.no_grad():
+            val_progress_bar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{Config.epochs} [Val]  ")
+            for images, masks in val_progress_bar:
+                images = images.to(Config.device, dtype=torch.float)
+                masks = masks.to(Config.device, dtype=torch.float)
+
+                outputs = model(images)
+                loss = criterion(outputs, masks)
+
+                preds = (outputs > 0.5).float()
+                dice = calculate_dice(preds, masks)
+                iou = calculate_iou(preds, masks)
+
+                val_metric_monitor.update(dice.item(), iou.item())
+                val_running_loss += loss.item()
+
+                v_avg_dice, v_avg_iou = val_metric_monitor.get_avg()
+                val_progress_bar.set_postfix(
+                    {'Val Loss': f"{val_running_loss / len(val_progress_bar):.4f}", 'Val Dice': f"{v_avg_dice:.4f}"})
+
+        avg_val_loss = val_running_loss / len(val_loader)
+        avg_val_dice, _ = val_metric_monitor.get_avg()
+
+        print("-" * 60)
+        print(f"Train Loss: {avg_train_loss:.4f} | Train Dice: {avg_train_dice:.4f}")
+        print(f"Val   Loss: {avg_val_loss:.4f} | Val Dice:   {avg_val_dice:.4f}")
+
+        if avg_val_dice > best_val_dice:
+            best_val_dice = avg_val_dice
+            patience_counter = 0
+            torch.save(model.state_dict(), os.path.join(Config.save_dir, "best_model.pth"))
+            print(f"[Epoch {epoch + 1}] Val Dice Improved! New Best: {best_val_dice:.4f}")
+            print(f"Best Model Saved")
+
+        else:
+            patience_counter += 1
+            print(f"[Epoch {epoch + 1}] Val Dice No Improvement. Patience: {patience_counter}/{Config.patience}")
+            if patience_counter >= Config.patience:
+                print(f"Early stopping triggered at epoch {epoch + 1}.")
+                break
+
+        print("-" * 60)
+
+
+if __name__ == '__main__':
+    train()
