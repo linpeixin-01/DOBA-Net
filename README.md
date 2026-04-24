@@ -5,7 +5,7 @@ Accurate medical image segmentation is essential for computer-assisted diagnosis
 Dataset Structure
 =
 
-data/
+'data/
 ├── train/
 │   ├── images/
 │   └── masks/
@@ -14,7 +14,7 @@ data/
 │   └── masks/
 └── test/
 │   ├── images/
-└── └── masks/
+└── └── masks/'
 
 Usage
 =
